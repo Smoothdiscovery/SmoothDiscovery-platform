@@ -101,4 +101,65 @@ contract ERC20 is IERC20, Ownable {
 
         emit Transfer(from, address(0), value);
     }
+    // ============ Token Functions ============
+
+    function transfer(address to, uint256 value)
+        public
+        virtual
+        override
+        returns (bool)
+    {
+        if (_balances[msg.sender] >= value) {
+            _balances[msg.sender] = _balances[msg.sender].sub(value);
+            _balances[to] = _balances[to].add(value);
+            emit Transfer(msg.sender, to, value);
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) public virtual override returns (bool) {
+        if (
+            _balances[from] >= value && _allowances[from][msg.sender] >= value
+        ) {
+            _balances[to] = _balances[to].add(value);
+            _balances[from] = _balances[from].sub(value);
+            _allowances[from][msg.sender] = _allowances[from][msg.sender].sub(
+                value
+            );
+            emit Transfer(from, to, value);
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    function approve(address spender, uint256 value)
+        public
+        override
+        returns (bool)
+    {
+        return _approve(msg.sender, spender, value);
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 value
+    ) internal returns (bool) {
+        _allowances[owner][spender] = value;
+
+        emit Approval(owner, spender, value);
+
+        return true;
+    }
+
+    function mint(address to, uint256 value) public onlyOwner {
+        _mint(to, value);
+    }
 }
