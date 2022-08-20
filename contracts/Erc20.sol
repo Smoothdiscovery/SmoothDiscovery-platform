@@ -151,8 +151,7 @@ contract ERC20 is IERC20, Ownable {
         address owner,
         address spender,
         uint256 value
-    ) internal returns (bool) {
-        _allowances[owner][spender] = value;
+
 
 
 
