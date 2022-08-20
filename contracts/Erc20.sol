@@ -159,7 +159,4 @@ contract ERC20 is IERC20, Ownable {
         return true;
     }
 
-    function mint(address to, uint256 value) public onlyOwner {
-        _mint(to, value);
-    }
-}
+
