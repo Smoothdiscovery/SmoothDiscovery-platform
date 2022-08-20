@@ -154,9 +154,6 @@ contract ERC20 is IERC20, Ownable {
     ) internal returns (bool) {
         _allowances[owner][spender] = value;
 
-        emit Approval(owner, spender, value);
 
-        return true;
-    }
 
 
