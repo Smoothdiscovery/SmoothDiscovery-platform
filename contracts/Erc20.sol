@@ -147,10 +147,6 @@ contract ERC20 is IERC20, Ownable {
         return _approve(msg.sender, spender, value);
     }
 
-    function _approve(
-        address owner,
-        address spender,
-        uint256 value
 
 
 
