@@ -1,1 +1,1 @@
-# Smoothdiscovery-platform
+# Smoothdiscovery Platform
