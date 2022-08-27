@@ -32,4 +32,23 @@ contract VaultRelayer {
         vault.transferFromAccounts(transfers, msg.sender);
     }
 
+    function batchSwapWithFee(
+        IVault.SwapKind kind,
+        IVault.BatchSwapStep[] calldata swaps,
+        IERC20[] memory tokens,
+        IVault.FundManagement memory funds,
+        int256[] memory limits,
+        uint256 deadline,
+        GPv2Transfer.Data calldata feeTransfer
+    ) external onlyCreator returns (int256[] memory tokenDeltas) {
+        tokenDeltas = vault.batchSwap(
+            kind,
+            swaps,
+            tokens,
+            funds,
+            limits,
+            deadline
+        );
+        vault.fastTransferFromAccount(feeTransfer, msg.sender);
+    }
 }
