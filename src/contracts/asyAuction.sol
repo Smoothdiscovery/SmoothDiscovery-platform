@@ -226,6 +226,227 @@ contract EasyAuction is Ownable {
         return auctionCounter;
     }
 
+function placeSellOrders(
+        uint256 auctionId,
+        uint96[] memory _minBuyAmounts,
+        uint96[] memory _sellAmounts,
+        bytes32[] memory _prevSellOrders,
+        bytes calldata allowListCallData
+    ) external atStageOrderPlacement(auctionId) returns (uint64 userId) {
+        return
+            _placeSellOrders(
+                auctionId,
+                _minBuyAmounts,
+                _sellAmounts,
+                _prevSellOrders,
+                allowListCallData,
+                msg.sender
+            );
+    }
+
+    function placeSellOrdersOnBehalf(
+        uint256 auctionId,
+        uint96[] memory _minBuyAmounts,
+        uint96[] memory _sellAmounts,
+        bytes32[] memory _prevSellOrders,
+        bytes calldata allowListCallData,
+        address orderSubmitter
+    ) external atStageOrderPlacement(auctionId) returns (uint64 userId) {
+        return
+            _placeSellOrders(
+                auctionId,
+                _minBuyAmounts,
+                _sellAmounts,
+                _prevSellOrders,
+                allowListCallData,
+                orderSubmitter
+            );
+    }
+
+    function _placeSellOrders(
+        uint256 auctionId,
+        uint96[] memory _minBuyAmounts,
+        uint96[] memory _sellAmounts,
+        bytes32[] memory _prevSellOrders,
+        bytes calldata allowListCallData,
+        address orderSubmitter
+    ) internal returns (uint64 userId) {
+        {
+            address allowListManager = auctionAccessManager[auctionId];
+            if (allowListManager != address(0)) {
+                require(
+                    AllowListVerifier(allowListManager).isAllowed(
+                        orderSubmitter,
+                        auctionId,
+                        allowListCallData
+                    ) == AllowListVerifierHelper.MAGICVALUE,
+                    "user not allowed to place order"
+                );
+            }
+        }
+        {
+            (
+                ,
+                uint96 buyAmountOfInitialAuctionOrder,
+                uint96 sellAmountOfInitialAuctionOrder
+            ) = auctionData[auctionId].initialAuctionOrder.decodeOrder();
+            for (uint256 i = 0; i < _minBuyAmounts.length; i++) {
+                require(
+                    _minBuyAmounts[i].mul(buyAmountOfInitialAuctionOrder) <
+                        sellAmountOfInitialAuctionOrder.mul(_sellAmounts[i]),
+                    "limit price not better than mimimal offer"
+                );
+            }
+        }
+        uint256 sumOfSellAmounts = 0;
+        userId = getUserId(orderSubmitter);
+        uint256 minimumBiddingAmountPerOrder =
+            auctionData[auctionId].minimumBiddingAmountPerOrder;
+        for (uint256 i = 0; i < _minBuyAmounts.length; i++) {
+            require(
+                _minBuyAmounts[i] > 0,
+                "_minBuyAmounts must be greater than 0"
+            );
+            // orders should have a minimum bid size in order to limit the gas
+            // required to compute the final price of the auction.
+            require(
+                _sellAmounts[i] > minimumBiddingAmountPerOrder,
+                "order too small"
+            );
+            if (
+                sellOrders[auctionId].insert(
+                    IterableOrderedOrderSet.encodeOrder(
+                        userId,
+                        _minBuyAmounts[i],
+                        _sellAmounts[i]
+                    ),
+                    _prevSellOrders[i]
+                )
+            ) {
+                sumOfSellAmounts = sumOfSellAmounts.add(_sellAmounts[i]);
+                emit NewSellOrder(
+                    auctionId,
+                    userId,
+                    _minBuyAmounts[i],
+                    _sellAmounts[i]
+                );
+            }
+        }
+        auctionData[auctionId].biddingToken.safeTransferFrom(
+            msg.sender,
+            address(this),
+            sumOfSellAmounts
+        ); //[1]
+    }
+
+    function cancelSellOrders(uint256 auctionId, bytes32[] memory _sellOrders)
+        public
+        atStageOrderPlacementAndCancelation(auctionId)
+    {
+        uint64 userId = getUserId(msg.sender);
+        uint256 claimableAmount = 0;
+        for (uint256 i = 0; i < _sellOrders.length; i++) {
+            // Note: we keep the back pointer of the deleted element so that
+            // it can be used as a reference point to insert a new node.
+            bool success =
+                sellOrders[auctionId].removeKeepHistory(_sellOrders[i]);
+            if (success) {
+                (
+                    uint64 userIdOfIter,
+                    uint96 buyAmountOfIter,
+                    uint96 sellAmountOfIter
+                ) = _sellOrders[i].decodeOrder();
+                require(
+                    userIdOfIter == userId,
+                    "Only the user can cancel his orders"
+                );
+                claimableAmount = claimableAmount.add(sellAmountOfIter);
+                emit CancellationSellOrder(
+                    auctionId,
+                    userId,
+                    buyAmountOfIter,
+                    sellAmountOfIter
+                );
+            }
+        }
+        auctionData[auctionId].biddingToken.safeTransfer(
+            msg.sender,
+            claimableAmount
+        ); //[2]
+    }
+
+    function precalculateSellAmountSum(
+        uint256 auctionId,
+        uint256 iterationSteps
+    ) public atStageSolutionSubmission(auctionId) {
+        (, , uint96 auctioneerSellAmount) =
+            auctionData[auctionId].initialAuctionOrder.decodeOrder();
+        uint256 sumBidAmount = auctionData[auctionId].interimSumBidAmount;
+        bytes32 iterOrder = auctionData[auctionId].interimOrder;
+
+        for (uint256 i = 0; i < iterationSteps; i++) {
+            iterOrder = sellOrders[auctionId].next(iterOrder);
+            (, , uint96 sellAmountOfIter) = iterOrder.decodeOrder();
+            sumBidAmount = sumBidAmount.add(sellAmountOfIter);
+        }
+
+        require(
+            iterOrder != IterableOrderedOrderSet.QUEUE_END,
+            "reached end of order list"
+        );
+
+        // it is checked that not too many iteration steps were taken:
+        // require that the sum of SellAmounts times the price of the last order
+        // is not more than initially sold amount
+        (, uint96 buyAmountOfIter, uint96 sellAmountOfIter) =
+            iterOrder.decodeOrder();
+        require(
+            sumBidAmount.mul(buyAmountOfIter) <
+                auctioneerSellAmount.mul(sellAmountOfIter),
+            "too many orders summed up"
+        );
+
+        auctionData[auctionId].interimSumBidAmount = sumBidAmount;
+        auctionData[auctionId].interimOrder = iterOrder;
+    }
+
+    function settleAuctionAtomically(
+        uint256 auctionId,
+        uint96[] memory _minBuyAmount,
+        uint96[] memory _sellAmount,
+        bytes32[] memory _prevSellOrder,
+        bytes calldata allowListCallData
+    ) public atStageSolutionSubmission(auctionId) {
+        require(
+            auctionData[auctionId].isAtomicClosureAllowed,
+            "not allowed to settle auction atomically"
+        );
+        require(
+            _minBuyAmount.length == 1 && _sellAmount.length == 1,
+            "Only one order can be placed atomically"
+        );
+        uint64 userId = getUserId(msg.sender);
+        require(
+            auctionData[auctionId].interimOrder.smallerThan(
+                IterableOrderedOrderSet.encodeOrder(
+                    userId,
+                    _minBuyAmount[0],
+                    _sellAmount[0]
+                )
+            ),
+            "precalculateSellAmountSum is already too advanced"
+        );
+        _placeSellOrders(
+            auctionId,
+            _minBuyAmount,
+            _sellAmount,
+            _prevSellOrder,
+            allowListCallData,
+            msg.sender
+        );
+        settleAuction(auctionId);
+    }
+
     function registerUser(address user) public returns (uint64 userId) {
         numUsers = numUsers.add(1).toUint64();
         require(
