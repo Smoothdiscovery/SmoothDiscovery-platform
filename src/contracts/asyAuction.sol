@@ -637,6 +637,77 @@ function placeSellOrders(
         ); //[3]
     }
 
+function processFeesAndAuctioneerFunds(
+        uint256 auctionId,
+        uint256 fillVolumeOfAuctioneerOrder,
+        uint64 auctioneerId,
+        uint96 fullAuctionedAmount
+    ) internal {
+        uint256 feeAmount =
+            fullAuctionedAmount.mul(auctionData[auctionId].feeNumerator).div(
+                FEE_DENOMINATOR
+            ); //[20]
+        if (auctionData[auctionId].minFundingThresholdNotReached) {
+            sendOutTokens(
+                auctionId,
+                fullAuctionedAmount.add(feeAmount),
+                0,
+                auctioneerId
+            ); //[4]
+        } else {
+            //[11]
+            (, uint96 priceNumerator, uint96 priceDenominator) =
+                auctionData[auctionId].clearingPriceOrder.decodeOrder();
+            uint256 unsettledAuctionTokens =
+                fullAuctionedAmount.sub(fillVolumeOfAuctioneerOrder);
+            uint256 auctioningTokenAmount =
+                unsettledAuctionTokens.add(
+                    feeAmount.mul(unsettledAuctionTokens).div(
+                        fullAuctionedAmount
+                    )
+                );
+            uint256 biddingTokenAmount =
+                fillVolumeOfAuctioneerOrder.mul(priceDenominator).div(
+                    priceNumerator
+                );
+            sendOutTokens(
+                auctionId,
+                auctioningTokenAmount,
+                biddingTokenAmount,
+                auctioneerId
+            ); //[5]
+            sendOutTokens(
+                auctionId,
+                feeAmount.mul(fillVolumeOfAuctioneerOrder).div(
+                    fullAuctionedAmount
+                ),
+                0,
+                feeReceiverUserId
+            ); //[7]
+        }
+    }
+
+    function sendOutTokens(
+        uint256 auctionId,
+        uint256 auctioningTokenAmount,
+        uint256 biddingTokenAmount,
+        uint64 userId
+    ) internal {
+        address userAddress = registeredUsers.getAddressAt(userId);
+        if (auctioningTokenAmount > 0) {
+            auctionData[auctionId].auctioningToken.safeTransfer(
+                userAddress,
+                auctioningTokenAmount
+            );
+        }
+        if (biddingTokenAmount > 0) {
+            auctionData[auctionId].biddingToken.safeTransfer(
+                userAddress,
+                biddingTokenAmount
+            );
+        }
+    }
+
     function registerUser(address user) public returns (uint64 userId) {
         numUsers = numUsers.add(1).toUint64();
         require(
