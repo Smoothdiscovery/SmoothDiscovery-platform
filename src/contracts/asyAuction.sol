@@ -446,6 +446,196 @@ function placeSellOrders(
         );
         settleAuction(auctionId);
     }
+    
+    // @dev function settling the auction and calculating the price
+    function settleAuction(uint256 auctionId)
+        public
+        atStageSolutionSubmission(auctionId)
+        returns (bytes32 clearingOrder)
+    {
+        (
+            uint64 auctioneerId,
+            uint96 minAuctionedBuyAmount,
+            uint96 fullAuctionedAmount
+        ) = auctionData[auctionId].initialAuctionOrder.decodeOrder();
+
+        uint256 currentBidSum = auctionData[auctionId].interimSumBidAmount;
+        bytes32 currentOrder = auctionData[auctionId].interimOrder;
+        uint256 buyAmountOfIter;
+        uint256 sellAmountOfIter;
+        uint96 fillVolumeOfAuctioneerOrder = fullAuctionedAmount;
+        // Sum order up, until fullAuctionedAmount is fully bought or queue end is reached
+        do {
+            bytes32 nextOrder = sellOrders[auctionId].next(currentOrder);
+            if (nextOrder == IterableOrderedOrderSet.QUEUE_END) {
+                break;
+            }
+            currentOrder = nextOrder;
+            (, buyAmountOfIter, sellAmountOfIter) = currentOrder.decodeOrder();
+            currentBidSum = currentBidSum.add(sellAmountOfIter);
+        } while (
+            currentBidSum.mul(buyAmountOfIter) <
+                fullAuctionedAmount.mul(sellAmountOfIter)
+        );
+
+        if (
+            currentBidSum > 0 &&
+            currentBidSum.mul(buyAmountOfIter) >=
+            fullAuctionedAmount.mul(sellAmountOfIter)
+        ) {
+            // All considered/summed orders are sufficient to close the auction fully
+            // at price between current and previous orders.
+            uint256 uncoveredBids =
+                currentBidSum.sub(
+                    fullAuctionedAmount.mul(sellAmountOfIter).div(
+                        buyAmountOfIter
+                    )
+                );
+
+            if (sellAmountOfIter >= uncoveredBids) {
+                //[13]
+                // Auction fully filled via partial match of currentOrder
+                uint256 sellAmountClearingOrder =
+                    sellAmountOfIter.sub(uncoveredBids);
+                auctionData[auctionId]
+                    .volumeClearingPriceOrder = sellAmountClearingOrder
+                    .toUint96();
+                currentBidSum = currentBidSum.sub(uncoveredBids);
+                clearingOrder = currentOrder;
+            } else {
+                //[14]
+                // Auction fully filled via price strictly between currentOrder and the order
+                // immediately before. For a proof, see the security-considerations.md
+                currentBidSum = currentBidSum.sub(sellAmountOfIter);
+                clearingOrder = IterableOrderedOrderSet.encodeOrder(
+                    0,
+                    fullAuctionedAmount,
+                    currentBidSum.toUint96()
+                );
+            }
+        } else {
+            // All considered/summed orders are not sufficient to close the auction fully at price of last order //[18]
+            // Either a higher price must be used or auction is only partially filled
+
+            if (currentBidSum > minAuctionedBuyAmount) {
+                //[15]
+                // Price higher than last order would fill the auction
+                clearingOrder = IterableOrderedOrderSet.encodeOrder(
+                    0,
+                    fullAuctionedAmount,
+                    currentBidSum.toUint96()
+                );
+            } else {
+                //[16]
+                // Even at the initial auction price, the auction is partially filled
+                clearingOrder = IterableOrderedOrderSet.encodeOrder(
+                    0,
+                    fullAuctionedAmount,
+                    minAuctionedBuyAmount
+                );
+                fillVolumeOfAuctioneerOrder = currentBidSum
+                    .mul(fullAuctionedAmount)
+                    .div(minAuctionedBuyAmount)
+                    .toUint96();
+            }
+        }
+        auctionData[auctionId].clearingPriceOrder = clearingOrder;
+
+        if (auctionData[auctionId].minFundingThreshold > currentBidSum) {
+            auctionData[auctionId].minFundingThresholdNotReached = true;
+        }
+        processFeesAndAuctioneerFunds(
+            auctionId,
+            fillVolumeOfAuctioneerOrder,
+            auctioneerId,
+            fullAuctionedAmount
+        );
+        emit AuctionCleared(
+            auctionId,
+            fillVolumeOfAuctioneerOrder,
+            uint96(currentBidSum),
+            clearingOrder
+        );
+        // Gas refunds
+        auctionAccessManager[auctionId] = address(0);
+        delete auctionAccessData[auctionId];
+        auctionData[auctionId].initialAuctionOrder = bytes32(0);
+        auctionData[auctionId].interimOrder = bytes32(0);
+        auctionData[auctionId].interimSumBidAmount = uint256(0);
+        auctionData[auctionId].minimumBiddingAmountPerOrder = uint256(0);
+    }
+
+    function claimFromParticipantOrder(
+        uint256 auctionId,
+        bytes32[] memory orders
+    )
+        public
+        atStageFinished(auctionId)
+        returns (
+            uint256 sumAuctioningTokenAmount,
+            uint256 sumBiddingTokenAmount
+        )
+    {
+        for (uint256 i = 0; i < orders.length; i++) {
+            // Note: we don't need to keep any information about the node since
+            // no new elements need to be inserted.
+            require(
+                sellOrders[auctionId].remove(orders[i]),
+                "order is no longer claimable"
+            );
+        }
+        AuctionData memory auction = auctionData[auctionId];
+        (, uint96 priceNumerator, uint96 priceDenominator) =
+            auction.clearingPriceOrder.decodeOrder();
+        (uint64 userId, , ) = orders[0].decodeOrder();
+        bool minFundingThresholdNotReached =
+            auctionData[auctionId].minFundingThresholdNotReached;
+        for (uint256 i = 0; i < orders.length; i++) {
+            (uint64 userIdOrder, uint96 buyAmount, uint96 sellAmount) =
+                orders[i].decodeOrder();
+            require(
+                userIdOrder == userId,
+                "only allowed to claim for same user"
+            );
+            if (minFundingThresholdNotReached) {
+                //[10]
+                sumBiddingTokenAmount = sumBiddingTokenAmount.add(sellAmount);
+            } else {
+                //[23]
+                if (orders[i] == auction.clearingPriceOrder) {
+                    //[25]
+                    sumAuctioningTokenAmount = sumAuctioningTokenAmount.add(
+                        auction
+                            .volumeClearingPriceOrder
+                            .mul(priceNumerator)
+                            .div(priceDenominator)
+                    );
+                    sumBiddingTokenAmount = sumBiddingTokenAmount.add(
+                        sellAmount.sub(auction.volumeClearingPriceOrder)
+                    );
+                } else {
+                    if (orders[i].smallerThan(auction.clearingPriceOrder)) {
+                        //[17]
+                        sumAuctioningTokenAmount = sumAuctioningTokenAmount.add(
+                            sellAmount.mul(priceNumerator).div(priceDenominator)
+                        );
+                    } else {
+                        //[24]
+                        sumBiddingTokenAmount = sumBiddingTokenAmount.add(
+                            sellAmount
+                        );
+                    }
+                }
+            }
+            emit ClaimedFromOrder(auctionId, userId, buyAmount, sellAmount);
+        }
+        sendOutTokens(
+            auctionId,
+            sumAuctioningTokenAmount,
+            sumBiddingTokenAmount,
+            userId
+        ); //[3]
+    }
 
     function registerUser(address user) public returns (uint64 userId) {
         numUsers = numUsers.add(1).toUint64();
