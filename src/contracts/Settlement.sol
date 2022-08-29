@@ -212,5 +212,237 @@ contract Settlement is Signing, ReentrancyGuard, StorageAccessible {
         emit OrderInvalidated(owner, orderUid);
     }
 
-    
+    /// @dev Free storage from the filled amounts of **expired** orders to claim
+    /// a gas refund. This method can only be called as an interaction.
+    ///
+    /// @param orderUids The unique identifiers of the expired order to free
+    /// storage for.
+    function freeFilledAmountStorage(bytes[] calldata orderUids)
+        external
+        onlyInteraction
+    {
+        freeOrderStorage(filledAmount, orderUids);
+    }
+
+    /// @dev Free storage from the pre signatures of **expired** orders to claim
+    /// a gas refund. This method can only be called as an interaction.
+    ///
+    /// @param orderUids The unique identifiers of the expired order to free
+    /// storage for.
+    function freePreSignatureStorage(bytes[] calldata orderUids)
+        external
+        onlyInteraction
+    {
+        freeOrderStorage(preSignature, orderUids);
+    }
+
+    /// @dev Process all trades one at a time returning the computed net in and
+    /// out transfers for the trades.
+    ///
+    /// This method reverts if processing of any single trade fails. See
+    /// [`computeTradeExecution`] for more details.
+    ///
+    /// @param tokens An array of ERC20 tokens to be traded in the settlement.
+    /// @param clearingPrices An array of token clearing prices.
+    /// @param trades Trades for signed orders.
+    /// @return inTransfers Array of in transfers of executed sell amounts.
+    /// @return outTransfers Array of out transfers of executed buy amounts.
+    function computeTradeExecutions(
+        IERC20[] calldata tokens,
+        uint256[] calldata clearingPrices,
+        Trade.Data[] calldata trades
+    )
+        internal
+        returns (
+            Transfer.Data[] memory inTransfers,
+            Transfer.Data[] memory outTransfers
+        )
+    {
+        RecoveredOrder memory recoveredOrder = allocateRecoveredOrder();
+
+        inTransfers = new Transfer.Data[](trades.length);
+        outTransfers = new Transfer.Data[](trades.length);
+
+        for (uint256 i = 0; i < trades.length; i++) {
+            Trade.Data calldata trade = trades[i];
+
+            recoverOrderFromTrade(recoveredOrder, tokens, trade);
+            computeTradeExecution(
+                recoveredOrder,
+                clearingPrices[trade.sellTokenIndex],
+                clearingPrices[trade.buyTokenIndex],
+                trade.executedAmount,
+                inTransfers[i],
+                outTransfers[i]
+            );
+        }
+    }
+
+    /// @dev Compute the in and out transfer amounts for a single trade.
+    /// This function reverts if:
+    /// - The order has expired
+    /// - The order's limit price is not respected
+    /// - The order gets over-filled
+    /// - The fee discount is larger than the executed fee
+    ///
+    /// @param recoveredOrder The recovered order to process.
+    /// @param sellPrice The price of the order's sell token.
+    /// @param buyPrice The price of the order's buy token.
+    /// @param executedAmount The portion of the order to execute. This will be
+    /// ignored for fill-or-kill orders.
+    /// @param inTransfer Memory location for computed executed sell amount
+    /// transfer.
+    /// @param outTransfer Memory location for computed executed buy amount
+    /// transfer.
+    function computeTradeExecution(
+        RecoveredOrder memory recoveredOrder,
+        uint256 sellPrice,
+        uint256 buyPrice,
+        uint256 executedAmount,
+        Transfer.Data memory inTransfer,
+        Transfer.Data memory outTransfer
+    ) internal {
+        Order.Data memory order = recoveredOrder.data;
+        bytes memory orderUid = recoveredOrder.uid;
+
+        // solhint-disable-next-line not-rely-on-time
+        require(order.validTo >= block.timestamp, "address: order expired");
+
+        // NOTE: The following computation is derived from the equation:
+        // ```
+        // amount_x * price_x = amount_y * price_y
+        // ```
+        // Intuitively, if a chocolate bar is 0,50€ and a beer is 4€, 1 beer
+        // is roughly worth 8 chocolate bars (`1 * 4 = 8 * 0.5`). From this
+        // equation, we can derive:
+        // - The limit price for selling `x` and buying `y` is respected iff
+        // ```
+        // limit_x * price_x >= limit_y * price_y
+        // ```
+        // - The executed amount of token `y` given some amount of `x` and
+        //   clearing prices is:
+        // ```
+        // amount_y = amount_x * price_x / price_y
+        // ```
+
+        require(
+            order.sellAmount.mul(sellPrice) >= order.buyAmount.mul(buyPrice),
+            "address: limit price not respected"
+        );
+
+        uint256 executedSellAmount;
+        uint256 executedBuyAmount;
+        uint256 executedFeeAmount;
+        uint256 currentFilledAmount;
+
+        if (order.kind == Order.KIND_SELL) {
+            if (order.partiallyFillable) {
+                executedSellAmount = executedAmount;
+                executedFeeAmount = order.feeAmount.mul(executedSellAmount).div(
+                        order.sellAmount
+                    );
+            } else {
+                executedSellAmount = order.sellAmount;
+                executedFeeAmount = order.feeAmount;
+            }
+
+            executedBuyAmount = executedSellAmount.mul(sellPrice).ceilDiv(
+                buyPrice
+            );
+
+            currentFilledAmount = filledAmount[orderUid].add(
+                executedSellAmount
+            );
+            require(
+                currentFilledAmount <= order.sellAmount,
+                "address: order filled"
+            );
+        } else {
+            if (order.partiallyFillable) {
+                executedBuyAmount = executedAmount;
+                executedFeeAmount = order.feeAmount.mul(executedBuyAmount).div(
+                    order.buyAmount
+                );
+            } else {
+                executedBuyAmount = order.buyAmount;
+                executedFeeAmount = order.feeAmount;
+            }
+
+            executedSellAmount = executedBuyAmount.mul(buyPrice).div(sellPrice);
+
+            currentFilledAmount = filledAmount[orderUid].add(executedBuyAmount);
+            require(
+                currentFilledAmount <= order.buyAmount,
+                "address: order filled"
+            );
+        }
+
+        executedSellAmount = executedSellAmount.add(executedFeeAmount);
+        filledAmount[orderUid] = currentFilledAmount;
+
+        emit Trade(
+            recoveredOrder.owner,
+            order.sellToken,
+            order.buyToken,
+            executedSellAmount,
+            executedBuyAmount,
+            executedFeeAmount,
+            orderUid
+        );
+
+        inTransfer.account = recoveredOrder.owner;
+        inTransfer.token = order.sellToken;
+        inTransfer.amount = executedSellAmount;
+        inTransfer.balance = order.sellTokenBalance;
+
+        outTransfer.account = recoveredOrder.receiver;
+        outTransfer.token = order.buyToken;
+        outTransfer.amount = executedBuyAmount;
+        outTransfer.balance = order.buyTokenBalance;
+    }
+
+    /// @dev Execute a list of arbitrary contract calls from this contract.
+    /// @param interactions The list of interactions to execute.
+    function executeInteractions(Interaction.Data[] calldata interactions)
+        internal
+    {
+        for (uint256 i; i < interactions.length; i++) {
+            Interaction.Data calldata interaction = interactions[i];
+
+            // To prevent possible attack on user funds, we explicitly disable
+            // any interactions with the vault relayer contract.
+            require(
+                interaction.target != address(vaultRelayer),
+                "address: forbidden interaction"
+            );
+            Interaction.execute(interaction);
+
+            emit Interaction(
+                interaction.target,
+                interaction.value,
+                Interaction.selector(interaction)
+            );
+        }
+    }
+
+    /// @dev Claims refund for the specified storage and order UIDs.
+    ///
+    /// This method reverts if any of the orders are still valid.
+    ///
+    /// @param orderUids Order refund data for freeing storage.
+    /// @param orderStorage Order storage mapped on a UID.
+    function freeOrderStorage(
+        mapping(bytes => uint256) storage orderStorage,
+        bytes[] calldata orderUids
+    ) internal {
+        for (uint256 i = 0; i < orderUids.length; i++) {
+            bytes calldata orderUid = orderUids[i];
+
+            (, , uint32 validTo) = orderUid.extractOrderUidParams();
+            // solhint-disable-next-line not-rely-on-time
+            require(validTo < block.timestamp, "address: order still valid");
+
+            orderStorage[orderUid] = 0;
+        }
+    }
 }
