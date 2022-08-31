@@ -5,11 +5,7 @@ contract AllowListStorageReader {
     address private manager;
     mapping(address => bool) private solvers;
 
-    function areSolvers(address[] calldata prospectiveSolvers)
-        external
-        view
-        returns (bool)
-    {
+    function areSolvers(address[] calldata prospectiveSolvers) external view returns (bool) {
         for (uint256 i = 0; i < prospectiveSolvers.length; i++) {
             if (!solvers[prospectiveSolvers[i]]) {
                 return false;
