@@ -17,4 +17,22 @@ contract SettlementTestInterface is Settlement {
     function setFilledAmount(bytes calldata orderUid, uint256 amount) external {
         filledAmount[orderUid] = amount;
     }
+    
+    function computeTradeExecutionsTest(
+        IERC20[] calldata tokens,
+        uint256[] calldata clearingPrices,
+        Trade.Data[] calldata trades
+    )
+        external
+        returns (
+            Transfer.Data[] memory inTransfers,
+            Transfer.Data[] memory outTransfers
+        )
+    {
+        (inTransfers, outTransfers) = computeTradeExecutions(
+            tokens,
+            clearingPrices,
+            trades
+        );
+    }
 }
