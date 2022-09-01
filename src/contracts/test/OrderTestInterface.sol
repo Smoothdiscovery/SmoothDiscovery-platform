@@ -11,4 +11,9 @@ contract OrderTestInterface {
     function typeHashTest() external pure returns (bytes32) {
         return Order.TYPE_HASH;
     }
+    
+    function hashTest(Order.Data memory order, bytes32 domainSeparator) external pure returns (bytes32 orderDigest) {
+        orderDigest = order.hash(domainSeparator);
+    }
+
 }
