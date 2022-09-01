@@ -51,5 +51,18 @@ contract SettlementTestInterface is Settlement {
             mem := sub(mload(0x40), mem)
         }
     }
+    
+    function executeInteractionsTest(
+        Interaction.Data[] calldata interactions
+    ) external {
+        executeInteractions(interactions);
+    }
 
+    function freeFilledAmountStorageTest(bytes[] calldata orderUids) external {
+        this.freeFilledAmountStorage(orderUids);
+    }
+
+    function freePreSignatureStorageTest(bytes[] calldata orderUids) external {
+        this.freePreSignatureStorage(orderUids);
+    }
 }
