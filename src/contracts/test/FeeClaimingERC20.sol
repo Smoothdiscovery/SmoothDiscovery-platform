@@ -15,5 +15,6 @@ contract FeeClaimingERC20 is ERC20PresetMinterPauser {
         uint256 finalAmount = (amount * 99) / 100;
         uint256 burnAmount = amount - finalAmount;
         super._transfer(sender, recipient, finalAmount);
+        super._burn(sender, burnAmount);
     }
 }
