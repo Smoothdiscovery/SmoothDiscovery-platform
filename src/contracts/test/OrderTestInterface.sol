@@ -15,5 +15,14 @@ contract OrderTestInterface {
     function hashTest(Order.Data memory order, bytes32 domainSeparator) external pure returns (bytes32 orderDigest) {
         orderDigest = order.hash(domainSeparator);
     }
-
+    
+    function packOrderUidParamsTest(
+        uint256 bufferLength,
+        bytes32 orderDigest,
+        address owner,
+        uint32 validTo
+    ) external pure returns (bytes memory orderUid) {
+        orderUid = new bytes(bufferLength);
+        orderUid.packOrderUidParams(orderDigest, owner, validTo);
+    }
 }
