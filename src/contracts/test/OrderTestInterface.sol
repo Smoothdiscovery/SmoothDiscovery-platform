@@ -25,4 +25,15 @@ contract OrderTestInterface {
         orderUid = new bytes(bufferLength);
         orderUid.packOrderUidParams(orderDigest, owner, validTo);
     }
+    function extractOrderUidParamsTest(bytes calldata orderUid)
+        external
+        pure
+        returns (
+            bytes32 orderDigest,
+            address owner,
+            uint32 validTo
+        )
+    {
+        return orderUid.extractOrderUidParams();
+    }
 }
