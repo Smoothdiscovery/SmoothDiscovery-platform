@@ -35,4 +35,21 @@ contract SettlementTestInterface is Settlement {
             trades
         );
     }
+    function computeTradeExecutionMemoryTest() external returns (uint256 mem) {
+        RecoveredOrder memory recoveredOrder;
+        Transfer.Data memory inTransfer;
+        Transfer.Data memory outTransfer;
+
+        assembly {
+            mem := mload(0x40)
+        }
+
+        recoveredOrder.data.validTo = uint32(block.timestamp);
+        computeTradeExecution(recoveredOrder, 1, 1, 0, inTransfer, outTransfer);
+
+        assembly {
+            mem := sub(mload(0x40), mem)
+        }
+    }
+
 }
