@@ -11,4 +11,7 @@ contract InteractionTestInterface {
     function executeTest(Interaction.Data calldata interaction) external {
         Interaction.execute(interaction);
     }
+    function selectorTest(Interaction.Data calldata interaction) external pure returns (bytes4) {
+        return Interaction.selector(interaction);
+    }
 }
