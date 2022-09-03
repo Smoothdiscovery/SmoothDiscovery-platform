@@ -20,6 +20,12 @@ contract TransferTestInterface {
     ) external {
         Transfer.transferFromAccounts(vault, transfers, recipient);
     }
-
+    
+    function transferToAccountsTest(
+        IVault vault,
+        Transfer.Data[] memory transfers
+    ) external {
+        Transfer.transferToAccounts(vault, transfers);
+    }
     receive() external payable {}
 }
