@@ -78,5 +78,27 @@ contract SmartSellOrder is EIP1271Verifier {
             magicValue = EIP1271.MAGICVALUE;
         }
     }
+function orderForSellAmount(uint256 sellAmount)
+        public
+        view
+        returns (Order.Data memory order)
+    {
+        order.sellToken = sellToken;
+        order.buyToken = buyToken;
+        order.receiver = owner;
+        order.sellAmount = sellAmount;
+        order.buyAmount = buyAmountForSellAmount(sellAmount);
+        order.validTo = validTo;
+        order.appData = APPDATA;
+        order.feeAmount = totalFeeAmount.mul(sellAmount).div(totalSellAmount);
+        order.kind = Order.KIND_SELL;
+        // NOTE: We counter-intuitively set `partiallyFillable` to `false`, even
+        // if the smart order as a whole acts like a partially fillable order.
+        // This is done since, once a settlement commits to a specific sell
+        // amount, then it is expected to use it completely and not partially.
+        order.partiallyFillable = false;
+        order.sellTokenBalance = Order.BALANCE_ERC20;
+        order.buyTokenBalance = Order.BALANCE_ERC20;
+    }
 
 }
