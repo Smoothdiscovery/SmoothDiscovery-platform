@@ -101,4 +101,24 @@ function orderForSellAmount(uint256 sellAmount)
         order.buyTokenBalance = Order.BALANCE_ERC20;
     }
 
+    function buyAmountForSellAmount(uint256 sellAmount)
+        private
+        view
+        returns (uint256 buyAmount)
+    {
+        uint256 feeAdjustedBalance = sellToken
+            .balanceOf(address(this))
+            .mul(totalSellAmount)
+            .div(totalSellAmount.add(totalFeeAmount));
+        uint256 soldAmount = totalSellAmount > feeAdjustedBalance
+            ? totalSellAmount - feeAdjustedBalance
+            : 0;
+
+        // NOTE: This is currently a silly price strategy where the xrate
+        // increases linearly from 1:1 to 1:2 as the smart order gets filled.
+        // This can be extended to more complex "price curves".
+        buyAmount = sellAmount
+            .mul(totalSellAmount.add(sellAmount).add(soldAmount))
+            .div(totalSellAmount);
+    }
 }
